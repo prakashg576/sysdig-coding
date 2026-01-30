@@ -1,0 +1,4 @@
+
+# Ignore posture data exports
+/data/*.csv
+/data/*.csv.gz
