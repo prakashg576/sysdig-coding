@@ -950,11 +950,95 @@ def create_vuln_trend_charts(snapshots: list[tuple[str, pd.DataFrame]]):
 # Vulnerability Analytics UI
 # ---------------------------------------------------------------------------
 
+DEFAULT_VULN_WIDGET_ORDER = [
+    "Top 5 Most Vulnerable Images",
+    "Severity Distribution",
+    "Vulnerabilities by Vendor",
+    "Severity Breakdown by Vendor",
+    "Top 10 Images to Patch",
+    "Vulnerability Distribution",
+]
+
+DEFAULT_VULN_WIDGET_WIDTHS = {name: "half" for name in DEFAULT_VULN_WIDGET_ORDER}
+
+# Map widget names to chart keys returned by create_vuln_executive_charts
+WIDGET_CHART_KEYS = {
+    "Top 5 Most Vulnerable Images": "fig_top5",
+    "Severity Distribution": "fig_severity",
+    "Vulnerabilities by Vendor": "fig_vendor",
+    "Severity Breakdown by Vendor": "fig_vendor_severity",
+    "Top 10 Images to Patch": "fig_priority",
+    "Vulnerability Distribution": "fig_histogram",
+}
+
+
+def _init_vuln_layout_state():
+    """Initialize session state for dashboard layout if not already set."""
+    if "vuln_widget_order" not in st.session_state:
+        st.session_state.vuln_widget_order = list(DEFAULT_VULN_WIDGET_ORDER)
+    if "vuln_widget_widths" not in st.session_state:
+        st.session_state.vuln_widget_widths = dict(DEFAULT_VULN_WIDGET_WIDTHS)
+    if "vuln_widget_visible" not in st.session_state:
+        st.session_state.vuln_widget_visible = set(DEFAULT_VULN_WIDGET_ORDER)
+
+
+def _render_dashboard_widgets(charts: dict):
+    """Render widgets in user-configured order and width."""
+    order = st.session_state.vuln_widget_order
+    widths = st.session_state.vuln_widget_widths
+    visible = st.session_state.vuln_widget_visible
+
+    half_buffer = []  # (name, fig) pairs waiting for a column partner
+
+    def _flush_half_buffer():
+        nonlocal half_buffer
+        if not half_buffer:
+            return
+        if len(half_buffer) == 1:
+            name, fig = half_buffer[0]
+            col1, col2 = st.columns(2)
+            with col1:
+                with st.expander(name, expanded=True):
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                with st.expander(half_buffer[0][0], expanded=True):
+                    st.plotly_chart(half_buffer[0][1], use_container_width=True)
+            with col2:
+                with st.expander(half_buffer[1][0], expanded=True):
+                    st.plotly_chart(half_buffer[1][1], use_container_width=True)
+        half_buffer = []
+
+    for widget_name in order:
+        if widget_name not in visible:
+            continue
+
+        chart_key = WIDGET_CHART_KEYS.get(widget_name)
+        if not chart_key or chart_key not in charts:
+            continue
+
+        fig = charts[chart_key]
+        width = widths.get(widget_name, "half")
+
+        if width == "full":
+            _flush_half_buffer()
+            with st.expander(widget_name, expanded=True):
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            half_buffer.append((widget_name, fig))
+            if len(half_buffer) == 2:
+                _flush_half_buffer()
+
+    _flush_half_buffer()
+
+
 def vuln_analytics_page():
     """Render the Vulnerability Analytics page."""
     st.title("Registry Vulnerability Analytics")
     st.markdown("Fetch and analyze container image vulnerabilities from the Sysdig registry scanner.")
 
+    _init_vuln_layout_state()
     api_token = os.environ.get("SYSDIG_API_TOKEN", "")
 
     # --- Sidebar controls ---
@@ -1001,6 +1085,52 @@ def vuln_analytics_page():
             help="Upload previously downloaded snapshot JSONs to compare over time.",
             key="vuln_uploader",
         )
+
+        # --- Dashboard layout controls ---
+        st.markdown("---")
+        st.subheader("Dashboard Layout")
+
+        st.caption("Drag to reorder widgets:")
+        new_order = sort_items(
+            st.session_state.vuln_widget_order,
+            direction="vertical",
+            key="vuln_sort",
+        )
+        if new_order != st.session_state.vuln_widget_order:
+            st.session_state.vuln_widget_order = new_order
+            st.rerun()
+
+        st.markdown("---")
+        st.caption("Show / hide widgets:")
+        visible_selection = st.multiselect(
+            "Visible widgets",
+            options=st.session_state.vuln_widget_order,
+            default=list(st.session_state.vuln_widget_visible),
+            key="vuln_visible_select",
+            label_visibility="collapsed",
+        )
+        st.session_state.vuln_widget_visible = set(visible_selection)
+
+        st.markdown("---")
+        st.caption("Widget width:")
+        for wname in st.session_state.vuln_widget_order:
+            if wname not in st.session_state.vuln_widget_visible:
+                continue
+            current = st.session_state.vuln_widget_widths.get(wname, "half")
+            is_full = st.toggle(
+                f"{wname}",
+                value=(current == "full"),
+                key=f"width_{wname}",
+                help="Toggle full width",
+            )
+            st.session_state.vuln_widget_widths[wname] = "full" if is_full else "half"
+
+        st.markdown("---")
+        if st.button("Reset Layout", key="reset_layout"):
+            st.session_state.vuln_widget_order = list(DEFAULT_VULN_WIDGET_ORDER)
+            st.session_state.vuln_widget_widths = dict(DEFAULT_VULN_WIDGET_WIDTHS)
+            st.session_state.vuln_widget_visible = set(DEFAULT_VULN_WIDGET_ORDER)
+            st.rerun()
 
     # --- Handle fetch ---
     if fetch_clicked and api_token:
@@ -1078,7 +1208,7 @@ def vuln_analytics_page():
 
         st.markdown(f"*Snapshot: {latest_date}*")
 
-        # KPI row
+        # KPI row (always pinned at top)
         c1, c2, c3, c4, c5 = st.columns(5)
         total_high = int(latest_df['high'].sum())
         total_med = int(latest_df['medium'].sum())
@@ -1091,36 +1221,8 @@ def vuln_analytics_page():
 
         st.markdown("---")
 
-        # Row 1: Top 5 + Severity donut
-        col1, col2 = st.columns(2)
-        with col1:
-            st.plotly_chart(charts["fig_top5"], use_container_width=True)
-        with col2:
-            st.plotly_chart(charts["fig_severity"], use_container_width=True)
-
-        st.markdown("---")
-
-        # Row 2: Vendor breakdown + Severity by vendor
-        col3, col4 = st.columns(2)
-        with col3:
-            if "fig_vendor" in charts:
-                st.plotly_chart(charts["fig_vendor"], use_container_width=True)
-        with col4:
-            if "fig_vendor_severity" in charts:
-                st.plotly_chart(charts["fig_vendor_severity"], use_container_width=True)
-
-        st.markdown("---")
-
-        # Row 3: Priority to patch + Distribution histogram
-        col5, col6 = st.columns(2)
-        with col5:
-            if "fig_priority" in charts:
-                st.plotly_chart(charts["fig_priority"], use_container_width=True)
-            else:
-                st.info("No critical or high severity vulnerabilities found.")
-        with col6:
-            if "fig_histogram" in charts:
-                st.plotly_chart(charts["fig_histogram"], use_container_width=True)
+        # Customizable widget area
+        _render_dashboard_widgets(charts)
 
     # === Trend Analysis tab ===
     if has_trends:
