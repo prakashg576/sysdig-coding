@@ -1,8 +1,31 @@
 #!/usr/bin/env python3
 """
 Sysdig Posture Report Analytics - Web Interface
-Streamlit app for uploading CSV files and viewing dashboards.
+
+A Streamlit-based web application for analyzing and visualizing security posture
+reports and container vulnerability data from Sysdig.
+
+Features:
+- Upload and analyze posture compliance reports (CSV format)
+- Fetch and visualize registry vulnerability scan results via Sysdig API
+- Interactive dashboards with customizable widget layouts
+- Trend analysis across multiple report snapshots
+- Exportable reports in CSV and JSON formats
+
+Environment Variables:
+- SYSDIG_API_TOKEN: API token for authenticating with Sysdig API (required for vulnerability scanning)
+- SYSDIG_API_BASE: Base URL for Sysdig API (default: https://api.sysdig.com)
+
+Usage:
+    streamlit run app.py
+
+Author: Your Organization
+License: MIT
 """
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 
 import io
 import gzip
@@ -21,7 +44,11 @@ import requests
 import streamlit as st
 from streamlit_sortables import sort_items
 
+# =============================================================================
+# STREAMLIT PAGE CONFIGURATION
+# =============================================================================
 
+# Configure the Streamlit page layout and metadata
 st.set_page_config(
     page_title="Sysdig Posture Analytics",
     page_icon="🛡️",
@@ -29,10 +56,26 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
 
 def extract_date_from_filename(filename: str) -> datetime:
-    """Extract date from filename like 'Report_2026-01-31T03_25_25.610Z.csv.gz'."""
-    # Try to find ISO date pattern in filename
+    """
+    Extract date from a filename containing an ISO date pattern.
+
+    Args:
+        filename: Name of the file (e.g., 'Report_2026-01-31T03_25_25.610Z.csv.gz')
+
+    Returns:
+        datetime: Extracted date, or current date if no pattern found
+
+    Example:
+        >>> extract_date_from_filename('Report_2026-01-31T03_25_25.csv')
+        datetime(2026, 1, 31)
+    """
+    # Match ISO date pattern: YYYY-MM-DD optionally followed by time
     pattern = r'(\d{4}-\d{2}-\d{2})T?(\d{2}[_:]\d{2}[_:]\d{2})?'
     match = re.search(pattern, filename)
     if match:
@@ -42,25 +85,61 @@ def extract_date_from_filename(filename: str) -> datetime:
     return datetime.now()
 
 
+# =============================================================================
+# CONFIGURATION CONSTANTS
+# =============================================================================
+
+# Directory for storing fetched vulnerability data snapshots
 VULN_DATA_DIR = Path.home() / "sysdig-vuln-data"
-SYSDIG_API_BASE = "https://api.au1.sysdig.com"
+
+# Sysdig API base URL - configurable via environment variable
+# Set SYSDIG_API_BASE environment variable to override for different regions:
+#   - US: https://api.sysdig.com
+#   - EU: https://eu1.app.sysdig.com/api
+#   - AU: https://api.au1.sysdig.com
+SYSDIG_API_BASE = os.environ.get("SYSDIG_API_BASE", "https://api.sysdig.com")
+
+# Color mapping for vulnerability severity levels (used in charts)
 SEVERITY_COLORS = {
-    'Critical': '#9b59b6',
-    'High': '#e74c3c',
-    'Medium': '#f39c12',
-    'Low': '#3498db',
-    'Negligible': '#95a5a6',
+    'Critical': '#9b59b6',  # Purple for critical issues
+    'High': '#e74c3c',      # Red for high severity
+    'Medium': '#f39c12',    # Orange for medium severity
+    'Low': '#3498db',       # Blue for low severity
+    'Negligible': '#95a5a6',  # Gray for negligible/informational
 }
+
+# Ordered list of severity levels from most to least severe
 SEVERITY_ORDER = ['Critical', 'High', 'Medium', 'Low', 'Negligible']
+
+# =============================================================================
+# SYSDIG API FUNCTIONS
+# =============================================================================
 
 
 def fetch_registry_results(api_token: str, limit: int = 100) -> list[dict]:
-    """Fetch all registry vulnerability results using cursor-based pagination."""
+    """
+    Fetch all registry vulnerability scan results from Sysdig API.
+
+    Uses cursor-based pagination to retrieve all results across multiple
+    API calls. Each page contains up to 'limit' results.
+
+    Args:
+        api_token: Bearer token for Sysdig API authentication
+        limit: Number of results per page (default: 100)
+
+    Returns:
+        list[dict]: List of image vulnerability records from the registry scanner
+
+    Raises:
+        requests.HTTPError: If API request fails
+        requests.Timeout: If request exceeds 60 second timeout
+    """
     url = f"{SYSDIG_API_BASE}/secure/vulnerability/v1/registry-results"
     headers = {"Authorization": f"Bearer {api_token}", "Accept": "application/json"}
     all_results = []
     cursor = None
 
+    # Paginate through all results using cursor-based pagination
     while True:
         params = {"limit": limit}
         if cursor:
@@ -70,9 +149,11 @@ def fetch_registry_results(api_token: str, limit: int = 100) -> list[dict]:
         resp.raise_for_status()
         body = resp.json()
 
+        # Extract data from response and accumulate results
         data = body.get("data", [])
         all_results.extend(data)
 
+        # Check for next page cursor
         page_info = body.get("page", {})
         cursor = page_info.get("next")
         if not cursor:
@@ -82,10 +163,24 @@ def fetch_registry_results(api_token: str, limit: int = 100) -> list[dict]:
 
 
 def save_results_to_disk(results: list[dict], folder: Path = VULN_DATA_DIR) -> Path:
-    """Save fetched results as a timestamped JSON file."""
+    """
+    Save fetched vulnerability results to disk as a timestamped JSON file.
+
+    Creates a snapshot file that can be used later for trend analysis
+    or offline viewing.
+
+    Args:
+        results: List of vulnerability scan results from API
+        folder: Directory to save the snapshot (default: ~/sysdig-vuln-data)
+
+    Returns:
+        Path: Path to the saved JSON file
+    """
     folder.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filepath = folder / f"registry_vuln_{ts}.json"
+
+    # Create payload with metadata and results
     payload = {
         "fetched_at": datetime.now().isoformat(),
         "total_images": len(results),
@@ -96,11 +191,25 @@ def save_results_to_disk(results: list[dict], folder: Path = VULN_DATA_DIR) -> P
 
 
 def list_saved_snapshots(folder: Path = VULN_DATA_DIR) -> list[dict]:
-    """List saved JSON snapshot files sorted by date descending."""
+    """
+    List all saved vulnerability snapshot files.
+
+    Scans the snapshot directory for JSON files and returns metadata
+    about each snapshot, sorted by date (newest first).
+
+    Args:
+        folder: Directory containing snapshot files
+
+    Returns:
+        list[dict]: List of snapshot metadata including path, filename,
+                   fetch timestamp, and image count
+    """
     if not folder.exists():
         return []
+
     files = sorted(folder.glob("registry_vuln_*.json"), reverse=True)
     snapshots = []
+
     for f in files:
         try:
             meta = json.loads(f.read_text())
@@ -111,34 +220,65 @@ def list_saved_snapshots(folder: Path = VULN_DATA_DIR) -> list[dict]:
                 "total_images": meta.get("total_images", 0),
             })
         except (json.JSONDecodeError, KeyError):
+            # Skip corrupted or invalid files
             continue
+
     return snapshots
 
 
 def load_snapshot(filepath) -> list[dict]:
-    """Load image results from a JSON snapshot file."""
+    """
+    Load vulnerability data from a JSON snapshot file.
+
+    Supports both file paths and file-like objects (for uploaded files).
+
+    Args:
+        filepath: Path to JSON file or file-like object
+
+    Returns:
+        tuple: (data list, fetched_at timestamp string)
+    """
+    # Handle file-like objects (e.g., Streamlit uploaded files)
     if hasattr(filepath, 'read'):
         raw = filepath.read()
         if isinstance(raw, bytes):
             raw = raw.decode('utf-8')
         payload = json.loads(raw)
     else:
+        # Handle file path
         payload = json.loads(Path(filepath).read_text())
+
     return payload.get("data", []), payload.get("fetched_at", "unknown")
 
 
 def normalize_image_data(results: list[dict]) -> pd.DataFrame:
-    """Convert raw API results into a flat DataFrame for charting."""
+    """
+    Convert raw Sysdig API results into a normalized DataFrame for analysis.
+
+    Transforms the nested API response structure into a flat table format
+    suitable for charting and data analysis. Handles field name variations
+    across different API versions.
+
+    Args:
+        results: List of raw image scan results from Sysdig API
+
+    Returns:
+        pd.DataFrame: Normalized data with columns for image info, vulnerability
+                     counts by severity, and metadata. Sorted by total
+                     vulnerabilities (descending).
+    """
     rows = []
+
     for r in results:
-        # Handle actual API field: vulnTotalBySeverity (lowercase keys)
+        # Extract vulnerability counts by severity
+        # Handle field name variations across API versions
         vuln_sev = r.get("vulnTotalBySeverity",
                          r.get("vulnsBySev",
                                 r.get("vulnTotalBySev", {})))
         fix_sev = r.get("fixableVulnsBySeverity",
                         r.get("fixableVulnsBySev", {}))
 
-        # API uses lowercase severity keys
+        # Extract counts for each severity level (handle case variations)
         crit = vuln_sev.get("critical", vuln_sev.get("Critical", 0))
         high = vuln_sev.get("high", vuln_sev.get("High", 0))
         med = vuln_sev.get("medium", vuln_sev.get("Medium", 0))
@@ -146,6 +286,7 @@ def normalize_image_data(results: list[dict]) -> pd.DataFrame:
         neg = vuln_sev.get("negligible", vuln_sev.get("Negligible", 0))
         total_vulns = crit + high + med + low + neg
 
+        # Extract fixable vulnerability counts
         fix_crit = fix_sev.get("critical", fix_sev.get("Critical", 0))
         fix_high = fix_sev.get("high", fix_sev.get("High", 0))
         fix_med = fix_sev.get("medium", fix_sev.get("Medium", 0))
@@ -153,9 +294,11 @@ def normalize_image_data(results: list[dict]) -> pd.DataFrame:
         fix_neg = fix_sev.get("negligible", fix_sev.get("Negligible", 0))
         total_fixable = fix_crit + fix_high + fix_med + fix_low + fix_neg
 
+        # Get image pull string (the full image reference)
         pull_string = r.get("pullString", r.get("imagePullString", ""))
 
-        # Parse repository and tag from pullString (e.g. "registry/repo/image:tag")
+        # Parse repository and tag from pullString
+        # Format: "registry/repo/image:tag" -> repo="registry/repo/image", tag="tag"
         parsed_repo = pull_string
         parsed_tag = ""
         if ":" in pull_string:
@@ -163,6 +306,7 @@ def normalize_image_data(results: list[dict]) -> pd.DataFrame:
             parsed_repo = parts[0]
             parsed_tag = parts[1]
 
+        # Build normalized row with all relevant fields
         row = {
             "image_id": r.get("imageId", r.get("resultId", "")),
             "result_id": r.get("resultId", ""),
@@ -171,24 +315,29 @@ def normalize_image_data(results: list[dict]) -> pd.DataFrame:
             "tag": parsed_tag or r.get("tag", ""),
             "vendor": r.get("vendor", ""),
             "created_at": r.get("createdAt", ""),
+            # Vulnerability counts by severity
             "critical": crit,
             "high": high,
             "medium": med,
             "low": low,
             "negligible": neg,
+            # Fixable vulnerability counts
             "fix_critical": fix_crit,
             "fix_high": fix_high,
             "fix_medium": fix_med,
             "fix_low": fix_low,
             "fix_negligible": fix_neg,
+            # Aggregate counts
             "total_vulns": total_vulns,
             "total_fixable": total_fixable,
             "total_unfixable": total_vulns - total_fixable,
+            # Additional metadata
             "exploit_count": r.get("exploitCount", r.get("exploitableCount", 0)),
             "policy_status": r.get("policyStatus", r.get("policyEvaluation", "")),
             "in_use": r.get("inUse", False),
         }
-        # Build a short display name from pullString
+
+        # Create a short display name for charts (just image name:tag)
         name_part = parsed_repo.split("/")[-1] if "/" in parsed_repo else parsed_repo
         row["display_name"] = f"{name_part}:{parsed_tag}" if parsed_tag else name_part
         rows.append(row)
@@ -196,20 +345,45 @@ def normalize_image_data(results: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+
+    # Sort by total vulnerabilities for priority-based analysis
     df = df.sort_values("total_vulns", ascending=False).reset_index(drop=True)
     return df
 
 
+# =============================================================================
+# POSTURE REPORT DATA LOADING
+# =============================================================================
+
+
 def load_data(uploaded_file) -> pd.DataFrame:
-    """Load CSV data from uploaded file."""
+    """
+    Load posture report CSV data from an uploaded file.
+
+    Supports multiple file formats:
+    - Plain CSV files (.csv)
+    - Gzipped CSV files (.csv.gz)
+    - ZIP archives containing CSV files (.zip)
+
+    Args:
+        uploaded_file: Streamlit UploadedFile object
+
+    Returns:
+        tuple: (full_dataframe, failing_controls_only_dataframe)
+
+    Raises:
+        ValueError: If ZIP archive contains no CSV files
+    """
     filename = uploaded_file.name
 
+    # Handle ZIP archives
     if filename.endswith('.zip'):
         with zipfile.ZipFile(uploaded_file, 'r') as z:
-            # Find CSV files in the zip
+            # Find CSV files in the zip (including gzipped ones)
             csv_files = [f for f in z.namelist() if f.endswith('.csv') or f.endswith('.csv.gz')]
             if not csv_files:
                 raise ValueError("No CSV files found in the zip archive")
+
             # Use the first CSV file found
             csv_name = csv_files[0]
             if csv_name.endswith('.gz'):
@@ -219,20 +393,37 @@ def load_data(uploaded_file) -> pd.DataFrame:
             else:
                 with z.open(csv_name) as zf:
                     df = pd.read_csv(zf)
+
+    # Handle gzipped CSV files
     elif filename.endswith('.gz'):
         with gzip.open(uploaded_file, 'rt') as f:
             df = pd.read_csv(f)
+
+    # Handle plain CSV files
     else:
         df = pd.read_csv(uploaded_file)
 
-    # Filter to only failing controls
+    # Filter to only failing controls for analysis
     df_fail = df[df['Result'] == 'Fail'].copy()
 
     return df, df_fail
 
 
 def load_multiple_files(uploaded_files, group_by: str = 'Zones') -> pd.DataFrame:
-    """Load multiple CSV files and combine them with dates for trend analysis."""
+    """
+    Load multiple posture report CSV files for trend analysis.
+
+    Combines data from multiple reports (typically from different dates)
+    into a single DataFrame suitable for tracking changes over time.
+
+    Args:
+        uploaded_files: List of Streamlit UploadedFile objects
+        group_by: Column to group failures by ('Zones' or 'Account Id')
+
+    Returns:
+        pd.DataFrame: Combined data with columns for Owner, Total Failures,
+                     Unique Controls, Report Date, and Filename
+    """
     all_data = []
 
     for uploaded_file in uploaded_files:
@@ -279,9 +470,27 @@ def load_multiple_files(uploaded_files, group_by: str = 'Zones') -> pd.DataFrame
     return pd.DataFrame()
 
 
-def create_executive_charts(df: pd.DataFrame, group_by: str = 'Zones'):
-    """Create executive dashboard charts."""
+# =============================================================================
+# POSTURE ANALYTICS CHART GENERATION
+# =============================================================================
 
+
+def create_executive_charts(df: pd.DataFrame, group_by: str = 'Zones'):
+    """
+    Create executive-level dashboard charts for posture analytics.
+
+    Generates visualizations showing who contributes most to compliance
+    failures, designed for executive stakeholders to identify priority
+    areas for remediation.
+
+    Args:
+        df: DataFrame containing failing control records
+        group_by: Column to group data by ('Zones' for owners, 'Account Id' for accounts)
+
+    Returns:
+        tuple: (pie_chart, bar_chart, total_failures, unique_owners,
+               unique_accounts, top_owners_df, all_owner_stats_df)
+    """
     total_failures = len(df)
     unique_owners = df[group_by].nunique()
     unique_accounts = df['Account Id'].nunique()
@@ -372,8 +581,20 @@ def create_executive_charts(df: pd.DataFrame, group_by: str = 'Zones'):
 
 
 def create_person_charts(df: pd.DataFrame, top_owners: pd.DataFrame, group_by: str = 'Zones'):
-    """Create per-person breakdown charts."""
+    """
+    Create detailed breakdown charts for top contributors.
 
+    For each of the top 5 contributors, generates a horizontal bar chart
+    showing their most frequently failing controls by severity.
+
+    Args:
+        df: DataFrame containing failing control records
+        top_owners: DataFrame with top contributing owners
+        group_by: Column used for grouping ('Zones' or 'Account Id')
+
+    Returns:
+        list[tuple]: List of (owner_name, plotly_figure) pairs
+    """
     person_charts = []
     top_5_owners = top_owners.sort_values('Total Failures', ascending=False).head(5)
 
@@ -428,9 +649,22 @@ def create_person_charts(df: pd.DataFrame, top_owners: pd.DataFrame, group_by: s
 
 
 def create_security_charts(df: pd.DataFrame, group_by: str = 'Zones'):
-    """Create security team dashboard charts."""
+    """
+    Create security team dashboard charts for detailed drill-down.
 
-    # Treemap
+    Generates three visualizations:
+    1. Treemap: Hierarchical view of Owner > Severity > Control
+    2. Heatmap: Owner vs Control failure matrix
+    3. Stacked bar: Severity breakdown by owner
+
+    Args:
+        df: DataFrame containing failing control records
+        group_by: Column used for grouping ('Zones' or 'Account Id')
+
+    Returns:
+        tuple: (treemap_figure, heatmap_figure, severity_bar_figure)
+    """
+    # Treemap for hierarchical drill-down
     treemap_data = df.groupby([group_by, 'Control Severity', 'Control Name']).size().reset_index(name='Count')
 
     fig_treemap = px.treemap(
@@ -510,8 +744,19 @@ def create_security_charts(df: pd.DataFrame, group_by: str = 'Zones'):
 
 
 def create_trend_charts(trend_data: pd.DataFrame):
-    """Create trend analysis charts showing failures over time."""
+    """
+    Create trend analysis charts for tracking failures over time.
 
+    Visualizes how compliance failures change across multiple report
+    snapshots, helping identify improvement or regression.
+
+    Args:
+        trend_data: DataFrame with aggregated failure data per owner/date
+
+    Returns:
+        tuple: (line_chart, stacked_area_chart, summary_dataframe)
+               Returns (None, None, None) if trend_data is empty
+    """
     if trend_data.empty:
         return None, None
 
@@ -603,9 +848,22 @@ def create_trend_charts(trend_data: pd.DataFrame):
 
 
 def create_downloadable_reports(df: pd.DataFrame, owner_stats: pd.DataFrame, group_by: str = 'Zones'):
-    """Create downloadable CSV reports."""
+    """
+    Create downloadable CSV reports for offline analysis.
 
-    # Owner summary
+    Generates two reports:
+    1. Owner Summary: High-level stats per owner
+    2. Actionable Report: Detailed breakdown by owner/account/control
+
+    Args:
+        df: DataFrame containing failing control records
+        owner_stats: DataFrame with aggregated owner statistics
+        group_by: Column used for grouping
+
+    Returns:
+        tuple: (owner_export_df, actionable_report_df)
+    """
+    # Owner summary export
     owner_export = owner_stats.copy()
     owner_export['Related Items'] = owner_export['Related Items'].apply(lambda x: ', '.join(map(str, x)))
 
@@ -641,12 +899,31 @@ def create_downloadable_reports(df: pd.DataFrame, owner_stats: pd.DataFrame, gro
     return owner_export, action_df
 
 
-# ---------------------------------------------------------------------------
-# Vulnerability Analytics Charts
-# ---------------------------------------------------------------------------
+# =============================================================================
+# VULNERABILITY ANALYTICS CHART GENERATION
+# =============================================================================
+
 
 def create_vuln_executive_charts(df: pd.DataFrame):
-    """Create executive vulnerability dashboard charts. Returns dict of figures."""
+    """
+    Create executive dashboard charts for vulnerability analytics.
+
+    Generates multiple visualizations for analyzing container image
+    vulnerabilities from registry scans:
+    - Top 5 most vulnerable images (stacked bar)
+    - Severity distribution (donut chart)
+    - Vulnerabilities by vendor
+    - Severity breakdown by vendor
+    - Priority patching list (Critical + High)
+    - Vulnerability distribution histogram
+
+    Args:
+        df: Normalized DataFrame from normalize_image_data()
+
+    Returns:
+        dict: Chart figures keyed by name (e.g., 'fig_top5', 'fig_severity')
+              Also includes aggregate stats: 'total_images', 'total_vulns', 'total_critical'
+    """
     if df.empty:
         return {}
 
@@ -838,7 +1115,23 @@ def create_vuln_executive_charts(df: pd.DataFrame):
 
 
 def create_vuln_trend_charts(snapshots: list[tuple[str, pd.DataFrame]]):
-    """Create trend charts from multiple snapshots. Each entry is (date_str, df)."""
+    """
+    Create trend charts comparing vulnerability data across multiple snapshots.
+
+    Visualizes how vulnerability counts change over time to track
+    remediation progress or identify new issues.
+
+    Args:
+        snapshots: List of (date_string, dataframe) tuples, sorted by date
+
+    Returns:
+        dict: Contains trend figures and summary DataFrame:
+              - 'fig_total_trend': Total vulnerabilities over time
+              - 'fig_severity_trend': Severity breakdown over time
+              - 'fig_image_trend': Top 5 images tracked over time
+              - 'summary_df': Change summary table
+              Returns empty dict if fewer than 2 snapshots provided
+    """
     if len(snapshots) < 2:
         return {}
 
@@ -946,10 +1239,11 @@ def create_vuln_trend_charts(snapshots: list[tuple[str, pd.DataFrame]]):
     return charts
 
 
-# ---------------------------------------------------------------------------
-# Vulnerability Analytics UI
-# ---------------------------------------------------------------------------
+# =============================================================================
+# VULNERABILITY DASHBOARD UI CONFIGURATION
+# =============================================================================
 
+# Default widget display order for the vulnerability dashboard
 DEFAULT_VULN_WIDGET_ORDER = [
     "Top 5 Most Vulnerable Images",
     "Severity Distribution",
@@ -1033,8 +1327,22 @@ def _render_dashboard_widgets(charts: dict):
     _flush_half_buffer()
 
 
+# =============================================================================
+# PAGE RENDERING FUNCTIONS
+# =============================================================================
+
+
 def vuln_analytics_page():
-    """Render the Vulnerability Analytics page."""
+    """
+    Render the Vulnerability Analytics page.
+
+    This page provides:
+    - API integration to fetch registry scan results from Sysdig
+    - Interactive dashboard with customizable widget layouts
+    - Trend analysis when multiple snapshots are available
+    - Data explorer for searching and filtering images
+    - Export functionality for CSV and JSON formats
+    """
     st.title("Registry Vulnerability Analytics")
     st.markdown("Fetch and analyze container image vulnerabilities from the Sysdig registry scanner.")
 
@@ -1316,7 +1624,16 @@ def vuln_analytics_page():
 
 
 def posture_analytics_page():
-    """Render the Posture Analytics page (original functionality)."""
+    """
+    Render the Posture Analytics page for compliance report analysis.
+
+    This page provides:
+    - CSV file upload for posture compliance reports
+    - Executive dashboard showing top contributors to failures
+    - Security drill-down with treemap and heatmap views
+    - Trend analysis when multiple reports are uploaded
+    - Downloadable CSV reports for offline use
+    """
     st.title("Sysdig Posture Report Analytics")
     st.markdown("Upload your posture report CSV to generate executive and security dashboards.")
 
@@ -1509,8 +1826,18 @@ def posture_analytics_page():
             )
 
 
+# =============================================================================
+# APPLICATION ENTRY POINT
+# =============================================================================
+
+
 def main():
-    """Main entry point with mode selector."""
+    """
+    Main entry point for the Sysdig Analytics application.
+
+    Renders the sidebar navigation and routes to the appropriate
+    dashboard page based on user selection.
+    """
     with st.sidebar:
         st.header("Sysdig Analytics")
         mode = st.radio(

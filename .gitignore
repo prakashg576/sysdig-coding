@@ -1,4 +1,47 @@
-
 # Ignore posture data exports
 /data/*.csv
 /data/*.csv.gz
+
+# Ignore output files with sensitive data (personal names, AWS account IDs, etc.)
+/output/
+
+# Vulnerability data snapshots (may contain sensitive registry info)
+~/sysdig-vuln-data/
+sysdig-vuln-data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment variables (never commit secrets)
+.env
+.env.local
+.env.*.local

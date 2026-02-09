@@ -1,8 +1,33 @@
 #!/usr/bin/env python3
 """
-Sysdig Posture Report Analytics
-Generates executive and security team dashboards from CSV posture reports.
+Sysdig Posture Report Analytics - Command Line Tool
+
+A command-line utility for generating executive and security team dashboards
+from Sysdig posture compliance reports in CSV format.
+
+This script processes posture report data and generates:
+- Executive dashboard (HTML) showing top contributors to failures
+- Security drill-down treemap (HTML) for hierarchical analysis
+- Owner-Control heatmap (HTML) for detailed failure patterns
+- Severity breakdown charts (HTML)
+- CSV exports for offline analysis
+
+Usage:
+    python analyze_posture.py [data_dir] [output_dir]
+
+    data_dir:   Directory containing CSV/CSV.GZ posture reports (default: "data")
+    output_dir: Directory for generated outputs (default: "output")
+
+Example:
+    python analyze_posture.py ./reports ./dashboards
+
+Author: Your Organization
+License: MIT
 """
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 
 import gzip
 import glob
@@ -15,11 +40,28 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# =============================================================================
+# DATA LOADING FUNCTIONS
+# =============================================================================
+
 
 def extract_and_load_data(data_dir: str = "data") -> pd.DataFrame:
-    """Extract gzipped CSV and load into DataFrame."""
+    """
+    Load posture report data from CSV files in the specified directory.
 
-    # Find the CSV file (either .csv or .csv.gz)
+    Automatically handles both plain CSV and gzipped CSV files. If a .csv.gz
+    file is found, it will be extracted before loading.
+
+    Args:
+        data_dir: Directory path containing the CSV files
+
+    Returns:
+        pd.DataFrame: DataFrame containing only failing controls (Result == 'Fail')
+
+    Raises:
+        FileNotFoundError: If no CSV or CSV.GZ files are found
+    """
+    # Find CSV files (both plain and gzipped)
     csv_files = glob.glob(os.path.join(data_dir, "*.csv"))
     gz_files = glob.glob(os.path.join(data_dir, "*.csv.gz"))
 
@@ -50,9 +92,29 @@ def extract_and_load_data(data_dir: str = "data") -> pd.DataFrame:
     return df_fail
 
 
-def generate_executive_dashboard(df: pd.DataFrame, output_dir: str = "output"):
-    """Generate executive-level dashboard showing who contributes most to failures."""
+# =============================================================================
+# DASHBOARD GENERATION FUNCTIONS
+# =============================================================================
 
+
+def generate_executive_dashboard(df: pd.DataFrame, output_dir: str = "output"):
+    """
+    Generate executive-level dashboard as a standalone HTML file.
+
+    Creates an interactive dashboard showing:
+    - Pie chart of failure distribution by owner
+    - Horizontal bar chart of top 10 contributors
+    - Per-person breakdown charts for top 5 owners
+
+    Also generates a CSV summary of owner statistics.
+
+    Args:
+        df: DataFrame containing failing control records
+        output_dir: Directory to save output files
+
+    Returns:
+        pd.DataFrame: Owner statistics DataFrame
+    """
     Path(output_dir).mkdir(exist_ok=True)
 
     total_failures = len(df)
